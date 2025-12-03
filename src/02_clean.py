@@ -1,191 +1,278 @@
 """
-02_clean.py - Clean and validate review data from Bronze to Silver layer.
+02_clean.py
+Clean raw data from Bronze → Silver Parquet
 
-This script:
-- Loads raw review data from Bronze (Parquet)
-- Removes duplicates and invalid records
-- Cleans text content
-- Detects and masks PII
-- Saves cleaned data to Silver layer
+Cleaning steps:
+1. Remove rows with null/empty text
+2. Remove reviews with <20 tokens (too short)
+3. Add token_count column
+4. Filter non-English reviews (ASCII heuristic)
+5. Write to Silver Parquet
+
+Input:  data/bronze/reviews_raw.parquet (100K rows)
+Output: data/silver/reviews_cleaned.parquet (~95K rows)
 """
 
 import pandas as pd
-import duckdb
 from pathlib import Path
-import logging
-from datetime import datetime
-from utils import clean_text, detect_pii, remove_pii, validate_review_data
+import sys
+import time
 
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+# Add utils to path
+sys.path.insert(0, str(Path(__file__).parent))
+from utils import count_tokens
+
+print("="*70)
+print("02_CLEAN.PY - Data Cleaning Pipeline")
+print("="*70)
+
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
+
+PROJECT_ROOT = Path(__file__).parent.parent
+DATA_DIR = PROJECT_ROOT / "data"
+BRONZE_DIR = DATA_DIR / "bronze"
+SILVER_DIR = DATA_DIR / "silver"
+
+INPUT_FILE = BRONZE_DIR / "reviews_raw.parquet"
+OUTPUT_FILE = SILVER_DIR / "reviews_cleaned.parquet"
+
+MIN_TOKENS = 20  # Minimum tokens for meaningful analysis
+
+print(f"\n📁 Input:  {INPUT_FILE}")
+print(f"📁 Output: {OUTPUT_FILE}")
+print(f"🎯 Min tokens: {MIN_TOKENS}")
+
+# ============================================================================
+# STEP 1: Load Bronze Parquet
+# ============================================================================
+
+print(f"\n{'─'*70}")
+print("STEP 1: Loading Bronze Parquet")
+print(f"{'─'*70}")
+
+start_time = time.time()
+df = pd.read_parquet(INPUT_FILE)
+elapsed = time.time() - start_time
+
+print(f"✅ Loaded {len(df):,} reviews")
+print(f"⏱️  Load time: {elapsed:.1f} seconds")
+print(f"\n📊 Columns: {df.columns.tolist()}")
+
+initial_count = len(df)
+
+# ============================================================================
+# STEP 2: Remove Rows with Null/Empty Text
+# ============================================================================
+
+print(f"\n{'─'*70}")
+print("STEP 2: Removing Null/Empty Text")
+print(f"{'─'*70}")
+
+# Check for nulls
+null_count = df['text'].isnull().sum()
+print(f"Null text values: {null_count}")
+
+# Remove nulls
+if null_count > 0:
+    df = df[df['text'].notnull()].copy()
+    print(f"✅ Removed {null_count} null rows")
+
+# Check for empty strings (after stripping whitespace)
+df['text'] = df['text'].astype(str).str.strip()
+empty_count = (df['text'] == '').sum()
+print(f"Empty text values: {empty_count}")
+
+# Remove empty strings
+if empty_count > 0:
+    df = df[df['text'] != ''].copy()
+    print(f"✅ Removed {empty_count} empty rows")
+
+after_null_removal = len(df)
+print(f"\n📊 Remaining: {len(df):,} reviews ({len(df)/initial_count*100:.1f}%)")
+
+# ============================================================================
+# STEP 3: Add token_count Column
+# ============================================================================
+
+print(f"\n{'─'*70}")
+print("STEP 3: Adding Token Count Column")
+print(f"{'─'*70}")
+
+start_time = time.time()
+
+# Add token count using our utility function
+print("Computing token counts...")
+df['token_count'] = df['text'].apply(count_tokens)
+
+elapsed = time.time() - start_time
+print(f"✅ Token counts computed for {len(df):,} reviews")
+print(f"⏱️  Compute time: {elapsed:.1f} seconds")
+
+print(f"\n📊 Token count statistics:")
+print(df['token_count'].describe())
+
+# ============================================================================
+# STEP 4: Remove Reviews with <20 Tokens
+# ============================================================================
+
+print(f"\n{'─'*70}")
+print(f"STEP 4: Removing Reviews with <{MIN_TOKENS} Tokens")
+print(f"{'─'*70}")
+
+short_reviews = (df['token_count'] < MIN_TOKENS).sum()
+print(f"Reviews with <{MIN_TOKENS} tokens: {short_reviews:,} ({short_reviews/len(df)*100:.1f}%)")
+
+# Filter out short reviews
+df = df[df['token_count'] >= MIN_TOKENS].copy()
+
+after_token_filter = len(df)
+print(f"✅ Removed {short_reviews:,} short reviews")
+print(f"\n📊 Remaining: {len(df):,} reviews ({len(df)/initial_count*100:.1f}%)")
+
+# ============================================================================
+# STEP 5: Filter Non-English (ASCII Heuristic)
+# ============================================================================
+
+print(f"\n{'─'*70}")
+print("STEP 5: Filtering Non-English Reviews")
+print(f"{'─'*70}")
+
+def is_mostly_ascii(text: str, threshold: float = 0.9) -> bool:
+    """
+    Check if text is mostly ASCII characters.
+    
+    Heuristic for English text: >90% ASCII characters.
+    This is a simple approximation - more sophisticated NER
+    models would be better for production.
+    """
+    if not text:
+        return False
+    
+    ascii_count = sum(1 for c in text if ord(c) < 128)
+    return (ascii_count / len(text)) >= threshold
+
+# Test on sample first
+print("Testing ASCII filter on sample...")
+sample = df.head(1000)
+non_english_sample = sum(1 for text in sample['text'] if not is_mostly_ascii(text))
+print(f"  Sample: {non_english_sample}/1000 ({non_english_sample/10:.1f}%) appear non-English")
+
+# Apply filter
+print("\nApplying filter to all reviews...")
+start_time = time.time()
+
+df['is_english'] = df['text'].apply(is_mostly_ascii)
+non_english_count = (~df['is_english']).sum()
+
+print(f"Non-English reviews: {non_english_count:,} ({non_english_count/len(df)*100:.1f}%)")
+
+# Filter out non-English
+df = df[df['is_english']].copy()
+df = df.drop(columns=['is_english'])  # Remove temporary column
+
+elapsed = time.time() - start_time
+after_english_filter = len(df)
+
+print(f"✅ Removed {non_english_count:,} non-English reviews")
+print(f"⏱️  Filter time: {elapsed:.1f} seconds")
+print(f"\n📊 Remaining: {len(df):,} reviews ({len(df)/initial_count*100:.1f}%)")
+
+# ============================================================================
+# STEP 6: Write to Silver Parquet
+# ============================================================================
+
+print(f"\n{'─'*70}")
+print("STEP 6: Writing to Silver Parquet")
+print(f"{'─'*70}")
+
+# Ensure output directory exists
+SILVER_DIR.mkdir(parents=True, exist_ok=True)
+
+start_time = time.time()
+
+df.to_parquet(
+    OUTPUT_FILE,
+    engine='pyarrow',
+    compression='snappy',
+    index=False
 )
-logger = logging.getLogger(__name__)
 
+elapsed = time.time() - start_time
+file_size_mb = OUTPUT_FILE.stat().st_size / (1024**2)
 
-def load_bronze_data(bronze_path: str) -> pd.DataFrame:
-    """Load review data from Bronze layer."""
-    logger.info(f"Loading data from {bronze_path}")
+print(f"✅ Parquet file written: {OUTPUT_FILE.name}")
+print(f"✅ File size: {file_size_mb:.1f} MB")
+print(f"⏱️  Write time: {elapsed:.1f} seconds")
 
-    # Use DuckDB for efficient Parquet reading
-    con = duckdb.connect()
-    df = con.execute(f"""
-        SELECT * FROM read_parquet('{bronze_path}')
-    """).df()
-    con.close()
+# ============================================================================
+# STEP 7: Reload and Validate
+# ============================================================================
 
-    logger.info(f"Loaded {len(df):,} records from Bronze")
-    return df
+print(f"\n{'─'*70}")
+print("STEP 7: Validation")
+print(f"{'─'*70}")
 
+start_time = time.time()
+df_validate = pd.read_parquet(OUTPUT_FILE)
+elapsed = time.time() - start_time
 
-def remove_duplicates(df: pd.DataFrame) -> pd.DataFrame:
-    """Remove duplicate reviews based on review_id."""
-    initial_count = len(df)
-    df = df.drop_duplicates(subset=["review_id"], keep="first")
-    removed_count = initial_count - len(df)
+print(f"✅ File reloaded successfully")
+print(f"⏱️  Read time: {elapsed:.1f} seconds")
 
-    if removed_count > 0:
-        logger.info(f"Removed {removed_count:,} duplicate records")
+# Validation checks
+print(f"\n📊 Validation Results:")
+print(f"  Shape: {df_validate.shape}")
+print(f"  Columns: {df_validate.columns.tolist()}")
 
-    return df
+# Check for nulls
+print(f"\n📊 Null counts:")
+print(df_validate.isnull().sum())
 
+# Check token count column exists and is correct
+assert 'token_count' in df_validate.columns, "❌ Missing token_count column"
+assert df_validate['token_count'].min() >= MIN_TOKENS, f"❌ Found reviews with <{MIN_TOKENS} tokens"
+assert df_validate['text'].isnull().sum() == 0, "❌ Found null text values"
 
-def filter_invalid_records(df: pd.DataFrame) -> pd.DataFrame:
-    """Filter out invalid records."""
-    initial_count = len(df)
+print(f"\n✅ All validation checks passed")
 
-    # Remove records with missing critical fields
-    df = df[df["text"].notna()]
-    df = df[df["stars"].notna()]
-    df = df[df["business_id"].notna()]
-    df = df[df["user_id"].notna()]
+# ============================================================================
+# STEP 8: Cleaning Summary
+# ============================================================================
 
-    # Remove records with empty text
-    df = df[df["text"].str.strip().str.len() > 0]
+print(f"\n{'─'*70}")
+print("STEP 8: Cleaning Summary")
+print(f"{'─'*70}")
 
-    # Remove records with invalid star ratings
-    df = df[(df["stars"] >= 1) & (df["stars"] <= 5)]
+total_removed = initial_count - len(df_validate)
+removal_rate = (total_removed / initial_count) * 100
 
-    removed_count = initial_count - len(df)
-    if removed_count > 0:
-        logger.info(f"Removed {removed_count:,} invalid records")
+print(f"\n📊 Cleaning Statistics:")
+print(f"  Initial reviews:        {initial_count:,}")
+print(f"  After null removal:     {after_null_removal:,} (removed: {initial_count - after_null_removal:,})")
+print(f"  After token filter:     {after_token_filter:,} (removed: {after_null_removal - after_token_filter:,})")
+print(f"  After English filter:   {after_english_filter:,} (removed: {after_token_filter - after_english_filter:,})")
+print(f"  Final count:            {len(df_validate):,}")
+print(f"  Total removed:          {total_removed:,} ({removal_rate:.1f}%)")
+print(f"  Retention rate:         {len(df_validate)/initial_count*100:.1f}%")
 
-    return df
+print(f"\n📊 Token distribution (cleaned data):")
+print(df_validate['token_count'].describe())
 
+print(f"\n📊 Sample cleaned reviews:")
+print(df_validate[['review_id', 'stars', 'token_count', 'text']].head(3).to_string())
 
-def clean_review_text(df: pd.DataFrame) -> pd.DataFrame:
-    """Clean text content in reviews."""
-    logger.info("Cleaning review text...")
+# ============================================================================
+# COMPLETION
+# ============================================================================
 
-    # Clean text
-    df["text_cleaned"] = df["text"].apply(clean_text)
-
-    # Calculate text length after cleaning
-    df["text_length"] = df["text_cleaned"].str.len()
-
-    # Remove reviews that became too short after cleaning (< 10 characters)
-    initial_count = len(df)
-    df = df[df["text_length"] >= 10]
-    removed_count = initial_count - len(df)
-
-    if removed_count > 0:
-        logger.info(f"Removed {removed_count:,} reviews with insufficient text")
-
-    return df
-
-
-def handle_pii(df: pd.DataFrame) -> pd.DataFrame:
-    """Detect and mask PII in review text."""
-    logger.info("Detecting and masking PII...")
-
-    # Detect PII
-    pii_flags = df["text_cleaned"].apply(detect_pii)
-    df["has_pii"] = pii_flags.apply(lambda x: any(x.values()))
-
-    # Log PII statistics
-    pii_count = df["has_pii"].sum()
-    if pii_count > 0:
-        logger.warning(
-            f"Found potential PII in {pii_count:,} reviews ({pii_count / len(df) * 100:.2f}%)"
-        )
-
-    # Mask PII
-    df["text_cleaned"] = df["text_cleaned"].apply(remove_pii)
-
-    return df
-
-
-def add_metadata(df: pd.DataFrame) -> pd.DataFrame:
-    """Add processing metadata."""
-    df["cleaned_at"] = datetime.now().isoformat()
-    df["processing_stage"] = "silver"
-
-    return df
-
-
-def save_to_silver(df: pd.DataFrame, silver_path: str) -> None:
-    """Save cleaned data to Silver layer."""
-    logger.info(f"Saving {len(df):,} records to {silver_path}")
-
-    # Ensure directory exists
-    Path(silver_path).parent.mkdir(parents=True, exist_ok=True)
-
-    # Save as Parquet with compression
-    df.to_parquet(silver_path, index=False, compression="snappy")
-
-    logger.info(f"Successfully saved to Silver layer")
-
-
-def main():
-    """Main cleaning pipeline."""
-    # Define paths
-    base_path = Path(__file__).parent.parent
-    bronze_path = base_path / "data" / "Bronze" / "reviews_100k.parquet"
-    silver_path = base_path / "data" / "Silver" / "reviews_cleaned.parquet"
-
-    logger.info("=" * 80)
-    logger.info("Starting data cleaning pipeline (Bronze → Silver)")
-    logger.info("=" * 80)
-
-    try:
-        # Load data
-        df = load_bronze_data(str(bronze_path))
-
-        # Validate initial data
-        logger.info("Initial data validation:")
-        validation = validate_review_data(df)
-        for key, value in validation.items():
-            logger.info(f"  {key}: {value}")
-
-        # Clean data
-        df = remove_duplicates(df)
-        df = filter_invalid_records(df)
-        df = clean_review_text(df)
-        df = handle_pii(df)
-        df = add_metadata(df)
-
-        # Final validation
-        logger.info("\nFinal data validation:")
-        validation = validate_review_data(df)
-        for key, value in validation.items():
-            logger.info(f"  {key}: {value}")
-
-        # Save to Silver
-        save_to_silver(df, str(silver_path))
-
-        # Summary statistics
-        logger.info("\n" + "=" * 80)
-        logger.info("Cleaning pipeline completed successfully")
-        logger.info(f"Output: {len(df):,} cleaned records")
-        logger.info(
-            f"Data quality: {len(df) / validation.get('total_records', 1) * 100:.2f}% records retained"
-        )
-        logger.info("=" * 80)
-
-    except Exception as e:
-        logger.error(f"Error in cleaning pipeline: {str(e)}", exc_info=True)
-        raise
-
-
-if __name__ == "__main__":
-    main()
+print(f"\n{'='*70}")
+print("✅ 02_CLEAN.PY COMPLETED SUCCESSFULLY")
+print(f"{'='*70}")
+print(f"📂 Output: {OUTPUT_FILE}")
+print(f"📊 Rows: {len(df_validate):,}")
+print(f"📊 Columns: {len(df_validate.columns)}")
+print(f"💾 Size: {file_size_mb:.1f} MB")
+print(f"📉 Removed: {removal_rate:.1f}% of original data")
+print(f"{'='*70}\n")
