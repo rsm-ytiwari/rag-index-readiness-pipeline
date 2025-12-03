@@ -1,0 +1,30 @@
+# Data files
+data/bronze/*.parquet
+data/silver/*.parquet
+data/gold/*.parquet
+*.csv
+Raw/*
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Yelp-JSON.zip
+data/Raw/yelp_academic_dataset_business.json
+data/Raw/yelp_academic_dataset_checkin.json
+data/Raw/yelp_academic_dataset_review.json
+data/Raw/yelp_academic_dataset_tip.json
+data/Raw/yelp_academic_dataset_user.json
+Yelp JSON/Yelp Dataset Documentation & ToS copy.pdf
+Yelp JSON/yelp_dataset.tar
+Yelp JSON/yelp_dataset/Dataset_User_Agreement.pdf
