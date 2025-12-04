@@ -77,20 +77,21 @@ start_time = time.time()
 # -------------------------------------------------------------------------
 # Component 1: Chunk Quality Score (0-100)
 # -------------------------------------------------------------------------
+
 def compute_chunk_score(quality_flag: str) -> int:
     """
     Score based on chunk quality.
-
+    
     optimal:    100 (perfect for RAG)
-    too_short:   30 (poor - lacks context)  # ← FIXED
+    too_short:   50 (usable but not ideal)
     too_long:     0 (needs re-chunking)
     empty:        0 (invalid)
     """
-    if quality_flag == "optimal":
+    if quality_flag == 'optimal':
         return 100
-    elif quality_flag == "too_short":
-        return 30  # ← NOW WORST CASE = 0.4*30 + 0.3*100 + 0.3*0 = 42 (REJECT!)
-    else:
+    elif quality_flag == 'too_short':
+        return 50
+    else:  # too_long, empty, or any other
         return 0
 
 df['chunk_score'] = df['chunk_quality_flag'].apply(compute_chunk_score)
@@ -108,7 +109,7 @@ print(f"     Score 0 (poor):        {(df['chunk_score'] == 0).sum():,} ({(df['ch
 def compute_duplicate_score(is_duplicate: bool) -> int:
     """
     Score based on duplicate status.
-
+    
     False (unique):    100 (good for indexing)
     True (duplicate):    0 (skip - wastes storage)
     """
@@ -128,7 +129,7 @@ print(f"     Score 0 (duplicate):    {(df['duplicate_score'] == 0).sum():,} ({(d
 def compute_pii_score(has_pii: bool) -> int:
     """
     Score based on PII presence.
-
+    
     False (no PII):  100 (safe to index)
     True (has PII):    0 (privacy risk - manual review needed)
     """
@@ -150,8 +151,8 @@ print("Computing final index-readiness scores...")
 print(f"{'─'*70}")
 
 df['index_readiness_score'] = (
-    df['chunk_score'] * 0.4 +
-    df['duplicate_score'] * 0.3 +
+    df['chunk_score'] * 0.4 + 
+    df['duplicate_score'] * 0.3 + 
     df['pii_score'] * 0.3
 ).round(1)
 

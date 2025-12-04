@@ -171,22 +171,15 @@ for flag, count in quality_dist.items():
 print(f"\n📊 Average Chunk Tokens Statistics:")
 print(df['avg_chunk_tokens'].describe())
 
-
-
-# [Keep everything the same until line 215 - STEP 5]
-# Replace STEP 5 (lines 215-290) with this:
-
 # ============================================================================
-# STEP 5: Duplicate Detection (MinHash LSH) - FIXED
+# STEP 5: Duplicate Detection (MinHash LSH)
 # ============================================================================
 
-print(f"\n{'─' * 70}")
+print(f"\n{'─'*70}")
 print("STEP 5: Duplicate Detection (MinHash LSH)")
-print(f"{'─' * 70}")
+print(f"{'─'*70}")
 
-print(
-    f"Detecting near-duplicates at {DUPLICATE_THRESHOLD * 100:.0f}% similarity threshold..."
-)
+print(f"Detecting near-duplicates at {DUPLICATE_THRESHOLD*100:.0f}% similarity threshold...")
 print("This will take ~10-15 minutes...")
 
 start_time = time.time()
@@ -197,100 +190,85 @@ lsh = MinHashLSH(threshold=DUPLICATE_THRESHOLD, num_perm=NUM_PERM)
 # Store MinHash signatures
 minhash_dict = {}
 
-print("\n  Step 5a: Computing MinHash signatures and building LSH index...")
+print("\n  Step 5a: Computing MinHash signatures...")
 for idx, row in df.iterrows():
-    review_id = row["review_id"]
-
     # Create MinHash signature for this review
     m = MinHash(num_perm=NUM_PERM)
-
-    # Tokenize text (simple word-based, use 3-grams for better similarity)
-    text = row["text"].lower()
-    words = text.split()
-
-    # Use character 3-grams for better duplicate detection
-    for i in range(len(text) - 2):
-        trigram = text[i : i + 3]
-        m.update(trigram.encode("utf-8"))
-
-    minhash_dict[review_id] = m
-
-    # Insert into LSH IMMEDIATELY (this was the bug - we insert as we go)
-    lsh.insert(review_id, m)
-
+    
+    # Tokenize text (simple word-based)
+    words = row['text'].lower().split()
+    for word in words:
+        m.update(word.encode('utf-8'))
+    
+    minhash_dict[row['review_id']] = m
+    
     # Progress indicator
     if (idx + 1) % 10000 == 0:
-        print(f"    Processed {idx + 1:,} reviews...", end="\r")
+        print(f"    Processed {idx+1:,} reviews...", end='\r')
 
-print(
-    f"\n  ✅ MinHash signatures computed and LSH index built for {len(minhash_dict):,} reviews"
-)
+print(f"\n  ✅ MinHash signatures computed for {len(minhash_dict):,} reviews")
 
 elapsed_minhash = time.time() - start_time
+print(f"  ⏱️  Time: {elapsed_minhash:.1f} seconds")
 
-# Find duplicates by querying LSH
-print("\n  Step 5b: Finding duplicate clusters...")
+# Build LSH index and find duplicates
+print("\n  Step 5b: Building LSH index and finding duplicates...")
 start_time = time.time()
 
 duplicate_clusters = {}
-cluster_id_counter = 0
-seen_reviews = set()
+cluster_id = 0
 
 for review_id, minhash in minhash_dict.items():
-    if review_id in seen_reviews:
-        continue
-
-    # Query for similar items (will include itself)
-    similar = lsh.query(minhash)
-
-    if len(similar) > 1:  # Found duplicates (more than just itself)
-        # Create a new cluster for these duplicates
-        cluster_id = cluster_id_counter
-        cluster_id_counter += 1
-
-        for dup_id in similar:
-            duplicate_clusters[dup_id] = cluster_id
-            seen_reviews.add(dup_id)
+    # Query for similar items
+    result = lsh.query(minhash)
+    
+    if result:
+        # Found duplicates - assign to existing cluster
+        # Use the first result's cluster
+        found_cluster = None
+        for existing_id in result:
+            if existing_id in duplicate_clusters:
+                found_cluster = duplicate_clusters[existing_id]
+                break
+        
+        if found_cluster is not None:
+            duplicate_clusters[review_id] = found_cluster
+        else:
+            # Create new cluster
+            duplicate_clusters[review_id] = cluster_id
+            for dup_id in result:
+                duplicate_clusters[dup_id] = cluster_id
+            cluster_id += 1
     else:
-        # Unique review
-        duplicate_clusters[review_id] = -1
-        seen_reviews.add(review_id)
-
+        # No duplicates found - this is unique
+        duplicate_clusters[review_id] = -1  # -1 means unique
+    
+    # Insert into LSH
+    lsh.insert(review_id, minhash)
+    
     # Progress indicator
-    if len(seen_reviews) % 10000 == 0:
-        print(f"    Processed {len(seen_reviews):,} reviews...", end="\r")
+    if (len(duplicate_clusters) % 10000 == 0):
+        print(f"    Processed {len(duplicate_clusters):,} reviews...", end='\r')
 
 elapsed_lsh = time.time() - start_time
 total_dup_time = elapsed_minhash + elapsed_lsh
 
-print(f"\n  ✅ Duplicate clusters identified")
+print(f"\n  ✅ LSH index built and duplicates found")
 print(f"  ⏱️  Time: {elapsed_lsh:.1f} seconds")
 print(f"  ⏱️  Total duplicate detection time: {total_dup_time:.1f} seconds")
 
 # Add duplicate information to dataframe
-df["duplicate_cluster_id"] = df["review_id"].map(duplicate_clusters)
-df["is_duplicate"] = df["duplicate_cluster_id"] != -1
+df['duplicate_cluster_id'] = df['review_id'].map(duplicate_clusters)
+df['is_duplicate'] = df['duplicate_cluster_id'] != -1
 
-duplicate_count = df["is_duplicate"].sum()
+duplicate_count = df['is_duplicate'].sum()
 duplicate_rate = duplicate_count / len(df) * 100
 
 print(f"\n📊 Duplicate Detection Results:")
-print(f"  Total reviews:      {len(df):,}")
-print(f"  Duplicates found:   {duplicate_count:,} ({duplicate_rate:.2f}%)")
-print(
-    f"  Unique reviews:     {len(df) - duplicate_count:,} ({100 - duplicate_rate:.2f}%)"
-)
-
-if duplicate_count > 0:
-    unique_clusters = df[df["is_duplicate"]]["duplicate_cluster_id"].nunique()
-    print(f"  Duplicate clusters: {unique_clusters:,}")
-    print(
-        f"  Avg cluster size:   {duplicate_count / unique_clusters:.1f} reviews/cluster"
-    )
-else:
-    print(f"  Duplicate clusters: 0")
-
-# [Rest of the file stays the same]
+print(f"  Total reviews:     {len(df):,}")
+print(f"  Duplicates found:  {duplicate_count:,} ({duplicate_rate:.1f}%)")
+print(f"  Unique reviews:    {len(df) - duplicate_count:,} ({100-duplicate_rate:.1f}%)")
+print(f"  Duplicate clusters: {df[df['is_duplicate']]['duplicate_cluster_id'].nunique():,}")
 
 # ============================================================================
 # STEP 6: PII Detection
