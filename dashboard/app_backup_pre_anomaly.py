@@ -1,7 +1,6 @@
 """
-RAG Index-Readiness Dashboard - Bug Fixes Applied
-- Fix 1: Download ALL search results (not just 50)
-- Fix 2: Charts update when searching
+RAG Index-Readiness Dashboard - Enhanced with Cost Calculator & Exports
+Part 2: Production Features
 """
 
 import streamlit as st
@@ -10,18 +9,12 @@ import plotly.express as px
 import plotly.graph_objects as go
 from pathlib import Path
 import json
-import sys
 from io import BytesIO
 from reportlab.lib.pagesizes import letter
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from reportlab.lib.units import inch
-
-# Add src to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-
-from anomaly_detector import detect_quality_anomalies
 
 # ============================================================================
 # PAGE CONFIGURATION
@@ -45,21 +38,25 @@ def generate_pdf_report(df):
     elements = []
     styles = getSampleStyleSheet()
     
+    # Title
     title = Paragraph("<b>RAG Index-Readiness Quality Report</b>", styles['Title'])
     elements.append(title)
     elements.append(Spacer(1, 0.3*inch))
     
+    # Executive Summary
     summary_text = f"""
     <b>Executive Summary</b><br/>
     Total Reviews Analyzed: {len(df):,}<br/>
     Average Quality Score: {df['index_readiness_score'].mean():.1f}/100<br/>
     Index-Ready Reviews: {(df['index_ready']).sum():,} ({(df['index_ready']).sum()/len(df)*100:.1f}%)<br/>
+    Reviews Needing Manual Review: {(df['recommendation'] == 'review').sum():,} ({(df['recommendation'] == 'review').sum()/len(df)*100:.1f}%)<br/>
     Duplicate Rate: {(df['is_duplicate']).sum()/len(df)*100:.1f}%<br/>
     PII Risk: {(df['has_pii']).sum()/len(df)*100:.1f}%<br/>
     """
     elements.append(Paragraph(summary_text, styles['Normal']))
     elements.append(Spacer(1, 0.3*inch))
     
+    # Quality Distribution Table
     elements.append(Paragraph("<b>Quality Distribution</b>", styles['Heading2']))
     
     quality_data = [
@@ -84,16 +81,18 @@ def generate_pdf_report(df):
     elements.append(table)
     elements.append(Spacer(1, 0.3*inch))
     
+    # Recommendations
     elements.append(Paragraph("<b>Recommendations</b>", styles['Heading2']))
     
     recommendations = f"""
     1. <b>Index {(df['index_ready']).sum():,} reviews immediately</b> - These meet quality standards<br/>
     2. <b>Review {(df['has_pii']).sum():,} reviews with PII</b> - Consider redaction before indexing<br/>
     3. <b>Monitor chunk quality</b> - {(df['chunk_quality_flag'] == 'too_short').sum():,} reviews are too short<br/>
-    4. <b>Estimated Cost Savings</b> - Filtering saves ~${(len(df) - (df['index_ready']).sum()) * 0.25 / 1000 * 12:,.0f}/year<br/>
+    4. <b>Estimated Cost Savings</b> - Filtering saves ~${(len(df) - (df['index_ready']).sum()) * 0.25 / 1000 * 12:,.0f}/year in vector DB costs<br/>
     """
     elements.append(Paragraph(recommendations, styles['Normal']))
     
+    # Build PDF
     doc.build(elements)
     buffer.seek(0)
     return buffer
@@ -105,17 +104,18 @@ def generate_pdf_report(df):
 @st.cache_data
 def load_data():
     """Load Gold Parquet with caching for performance."""
-    data_path = Path("data/gold/reviews_featured.parquet")
+    data_path = Path("../data/gold/reviews_featured.parquet")
     
     if not data_path.exists():
-        st.error(f"❌ Data file not found: {data_path}")
-        st.stop()
+        data_path = Path("data/gold/reviews_featured.parquet")
     
     df = pd.read_parquet(data_path)
     
+    # Parse date column
     df['date'] = pd.to_datetime(df['date'])
     df['year_month'] = df['date'].dt.to_period('M')
     
+    # Parse PII types (JSON string to list)
     df['pii_types_list'] = df['pii_types'].apply(
         lambda x: json.loads(x) if x and x != '[]' else []
     )
@@ -123,19 +123,12 @@ def load_data():
     return df
 
 # Load data
-df = load_data()
-
-# ============================================================================
-# ANOMALY DETECTION
-# ============================================================================
-
-@st.cache_data
-def detect_anomalies(_df):
-    """Detect quality anomalies with caching."""
-    anomaly_df, summary = detect_quality_anomalies(_df)
-    return anomaly_df, summary
-
-anomaly_df, anomaly_summary = detect_anomalies(df)
+try:
+    df = load_data()
+    data_loaded = True
+except Exception as e:
+    st.error(f"❌ Error loading data: {e}")
+    st.stop()
 
 # ============================================================================
 # SIDEBAR - FILTERS
@@ -143,6 +136,7 @@ anomaly_df, anomaly_summary = detect_anomalies(df)
 
 st.sidebar.header("🔍 Filters")
 
+# Filter 1: Date Range
 st.sidebar.subheader("Date Range")
 min_date = df['date'].min().date()
 max_date = df['date'].max().date()
@@ -154,11 +148,13 @@ date_range = st.sidebar.date_input(
     max_value=max_date
 )
 
+# Handle single date selection
 if isinstance(date_range, tuple) and len(date_range) == 2:
     start_date, end_date = date_range
 else:
     start_date = end_date = date_range
 
+# Filter 2: Star Rating
 st.sidebar.subheader("Star Rating")
 star_options = sorted(df['stars'].unique())
 selected_stars = st.sidebar.multiselect(
@@ -167,6 +163,7 @@ selected_stars = st.sidebar.multiselect(
     default=star_options
 )
 
+# Filter 3: Quality Tier
 st.sidebar.subheader("Quality Tier")
 quality_options = ['All', 'Index Ready', 'Needs Review', 'Reject']
 selected_quality = st.sidebar.selectbox(
@@ -178,14 +175,17 @@ selected_quality = st.sidebar.selectbox(
 # Apply filters
 filtered_df = df.copy()
 
+# Date filter
 filtered_df = filtered_df[
     (filtered_df['date'].dt.date >= start_date) & 
     (filtered_df['date'].dt.date <= end_date)
 ]
 
+# Star rating filter
 if selected_stars:
     filtered_df = filtered_df[filtered_df['stars'].isin(selected_stars)]
 
+# Quality tier filter
 if selected_quality != 'All':
     if selected_quality == 'Index Ready':
         filtered_df = filtered_df[filtered_df['recommendation'] == 'index']
@@ -194,16 +194,18 @@ if selected_quality != 'All':
     elif selected_quality == 'Reject':
         filtered_df = filtered_df[filtered_df['recommendation'] == 'reject']
 
+# Sidebar info
 st.sidebar.markdown("---")
-st.sidebar.info(f"**Filtered:** {len(filtered_df):,} / {len(df):,} reviews")
+st.sidebar.info(f"**Filtered:** {len(filtered_df):,} / {len(df):,} reviews ({len(filtered_df)/len(df)*100:.1f}%)")
 
 # ============================================================================
-# COST CALCULATOR WIDGET
+# 🆕 COST CALCULATOR WIDGET
 # ============================================================================
 
 st.sidebar.markdown("---")
 st.sidebar.header("💰 Cost Impact Calculator")
 
+# Input parameters
 vector_db_cost_per_1k = st.sidebar.slider(
     "Vector DB Cost ($/1K embeddings)",
     min_value=0.10,
@@ -218,9 +220,11 @@ reviews_to_index = st.sidebar.number_input(
     min_value=1,
     max_value=100,
     value=10,
-    step=1
+    step=1,
+    help="Total number of reviews you plan to index"
 )
 
+# Calculate savings
 total_reviews = reviews_to_index * 1_000_000
 index_ready_rate = (df['index_ready']).sum() / len(df)
 
@@ -245,56 +249,17 @@ st.sidebar.metric(
 st.sidebar.success(f"✅ Filter removes {(1-index_ready_rate)*100:.1f}% of low-quality reviews")
 
 # ============================================================================
-# BEFORE/AFTER COMPARISON TOGGLE
-# ============================================================================
-
-st.sidebar.markdown("---")
-comparison_mode = st.sidebar.checkbox(
-    "📊 Show Before/After Comparison",
-    value=False,
-    help="Compare metrics with and without quality filtering"
-)
-
-# ============================================================================
 # MAIN DASHBOARD - HEADER
 # ============================================================================
 
 st.title("📊 RAG Index-Readiness Dashboard")
 st.markdown("### Yelp Reviews Data Quality Analysis")
 
-# ============================================================================
-# ANOMALY ALERT BANNER
-# ============================================================================
-
-if anomaly_summary['anomaly_count'] > 0:
-    st.warning(f"⚠️ **Quality Alert:** {anomaly_summary['anomaly_count']} anomalous period(s) detected ({anomaly_summary['anomaly_rate']:.1f}% of time periods)")
-    
-    with st.expander("🔍 View Anomaly Details"):
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            if anomaly_summary['low_quality_periods']:
-                st.markdown("**⚠️ Low Quality Periods:**")
-                for period in anomaly_summary['low_quality_periods']:
-                    st.markdown(f"- {period}")
-        
-        with col2:
-            if anomaly_summary['high_quality_periods']:
-                st.markdown("**✅ High Quality Periods:**")
-                for period in anomaly_summary['high_quality_periods']:
-                    st.markdown(f"- {period}")
-        
-        st.markdown("**📊 Detection Method:** Z-score (threshold: 2.0 std devs)")
-
-st.markdown("---")
-
-# ============================================================================
-# EXPORT BUTTONS
-# ============================================================================
-
+# 🆕 Export buttons at top
 col1, col2, col3 = st.columns(3)
 
 with col1:
+    # Export 1: Index-ready reviews
     ready_reviews = filtered_df[filtered_df['index_ready']].copy()
     ready_csv = ready_reviews[['review_id', 'text', 'stars', 'date', 'index_readiness_score']].to_csv(index=False)
     
@@ -307,6 +272,7 @@ with col1:
     )
 
 with col2:
+    # Export 2: PII reviews
     pii_reviews = filtered_df[filtered_df['has_pii']].copy()
     pii_csv = pii_reviews[['review_id', 'text', 'pii_types', 'index_readiness_score']].to_csv(index=False)
     
@@ -319,6 +285,7 @@ with col2:
     )
 
 with col3:
+    # Export 3: PDF Report
     pdf_buffer = generate_pdf_report(filtered_df)
     
     st.download_button(
@@ -332,228 +299,251 @@ with col3:
 st.markdown("---")
 
 # ============================================================================
-# BEFORE/AFTER COMPARISON (if enabled)
+# KPI METRICS (4 KEY METRICS)
 # ============================================================================
 
-if comparison_mode:
-    st.subheader("📊 Before/After Quality Filter Comparison")
-    
-    col1, col2 = st.columns(2)
-    
-    # Calculate metrics
-    all_reviews = len(df)
-    filtered_reviews = (df['index_ready']).sum()
-    cost_all = all_reviews * vector_db_cost_per_1k / 1000
-    cost_filtered = filtered_reviews * vector_db_cost_per_1k / 1000
-    
-    pii_all = (df['has_pii']).sum()
-    pii_filtered = (df[df['index_ready']]['has_pii']).sum()
-    
-    avg_score_all = df['index_readiness_score'].mean()
-    avg_score_filtered = df[df['index_ready']]['index_readiness_score'].mean()
-    
-    with col1:
-        st.markdown("#### WITHOUT Quality Filter")
-        st.metric("Reviews to Index", f"{all_reviews:,}")
-        st.metric("Storage Cost", f"${cost_all:,.2f}/month")
-        st.metric("PII Risk", f"{pii_all:,} reviews ({pii_all/all_reviews*100:.1f}%)", delta=None, delta_color="inverse")
-        st.metric("Avg Quality Score", f"{avg_score_all:.1f}/100")
-        st.warning("⚠️ Indexing ALL reviews regardless of quality")
-    
-    with col2:
-        st.markdown("#### WITH Quality Filter (score ≥ 70)")
-        st.metric("Reviews to Index", f"{filtered_reviews:,}", delta=f"-{all_reviews - filtered_reviews:,} filtered")
-        st.metric("Storage Cost", f"${cost_filtered:,.2f}/month", delta=f"-${cost_all - cost_filtered:,.2f}/month")
-        st.metric("PII Risk", f"{pii_filtered:,} reviews ({pii_filtered/filtered_reviews*100:.1f}%)", delta=f"-{pii_all - pii_filtered:,} reviews", delta_color="inverse")
-        st.metric("Avg Quality Score", f"{avg_score_filtered:.1f}/100", delta=f"+{avg_score_filtered - avg_score_all:.1f}")
-        st.success("✅ Only high-quality reviews indexed")
-    
-    st.markdown("---")
+st.header("🎯 Key Performance Indicators")
 
-# ============================================================================
-# REVIEW SEARCH
-# ============================================================================
+# Calculate KPIs
+total_reviews = len(filtered_df)
+avg_score = filtered_df['index_readiness_score'].mean()
+duplicate_rate = (filtered_df['is_duplicate'].sum() / total_reviews * 100) if total_reviews > 0 else 0
+pii_rate = (filtered_df['has_pii'].sum() / total_reviews * 100) if total_reviews > 0 else 0
+index_ready_rate = (filtered_df['index_ready'].sum() / total_reviews * 100) if total_reviews > 0 else 0
 
-st.subheader("🔍 Review Search")
-
-search_query = st.text_input(
-    "Search reviews by text or review_id",
-    placeholder="e.g., 'pizza', 'wEXCYHTpwn1ZrZDPlLeL7A', 'terrible service'"
-)
-
-# BUG FIX #1: Store ALL search results (not just 50)
-all_search_results = None
-
-if search_query:
-    # Get ALL matching results
-    all_search_results = filtered_df[
-        filtered_df['text'].str.contains(search_query, case=False, na=False) |
-        filtered_df['review_id'].str.contains(search_query, case=False, na=False)
-    ]
-    
-    # Show only top 50 for display
-    search_results_display = all_search_results.head(50)
-    
-    st.info(f"Found {len(all_search_results):,} matching reviews (showing top 50)")
-    
-    if len(all_search_results) > 0:
-        display_df = search_results_display[['review_id', 'stars', 'index_readiness_score', 'recommendation', 'text']].copy()
-        display_df['text_preview'] = display_df['text'].str[:100] + '...'
-        display_df = display_df.drop('text', axis=1)
-        
-        st.dataframe(display_df, use_container_width=True)
-        
-        # BUG FIX #1: Download ALL results (not just 50)
-        search_csv = all_search_results.to_csv(index=False)
-        st.download_button(
-            f"📥 Download Search Results ({len(all_search_results):,} reviews)",
-            data=search_csv,
-            file_name=f"search_results_{search_query[:20]}.csv",
-            mime="text/csv",
-            help=f"Downloads all {len(all_search_results):,} matching reviews"
-        )
-
-st.markdown("---")
-
-# ============================================================================
-# BUG FIX #2: Determine which data to show in charts
-# ============================================================================
-
-# If searching, show stats for search results
-# Otherwise, show stats for filtered data
-if search_query and all_search_results is not None and len(all_search_results) > 0:
-    chart_data = all_search_results
-    st.info(f"📊 **Charts below show statistics for {len(chart_data):,} search results**")
-else:
-    chart_data = filtered_df
-
-# ============================================================================
-# KPI METRICS (using chart_data)
-# ============================================================================
-
-st.subheader("📊 Key Metrics")
-
+# Display KPIs in columns
 col1, col2, col3, col4 = st.columns(4)
 
 with col1:
     st.metric(
-        "Total Reviews",
-        f"{len(chart_data):,}",
-        delta=None
+        label="Total Reviews",
+        value=f"{total_reviews:,}",
+        delta=f"{len(filtered_df) - len(df):,}" if len(filtered_df) != len(df) else None
     )
 
 with col2:
-    avg_score = chart_data['index_readiness_score'].mean()
     st.metric(
-        "Avg Quality Score",
-        f"{avg_score:.1f}/100",
-        delta=None
+        label="Avg Quality Score",
+        value=f"{avg_score:.1f}/100",
+        delta=f"{avg_score - df['index_readiness_score'].mean():.1f}" if len(filtered_df) != len(df) else None
     )
 
 with col3:
-    duplicate_rate = (chart_data['is_duplicate']).sum() / len(chart_data) * 100 if len(chart_data) > 0 else 0
     st.metric(
-        "Duplicate Rate",
-        f"{duplicate_rate:.1f}%",
-        delta=None
+        label="Duplicate Rate",
+        value=f"{duplicate_rate:.1f}%",
+        delta=f"{duplicate_rate - (df['is_duplicate'].sum() / len(df) * 100):.1f}%" if len(filtered_df) != len(df) else None,
+        delta_color="inverse"
     )
 
 with col4:
-    pii_rate = (chart_data['has_pii']).sum() / len(chart_data) * 100 if len(chart_data) > 0 else 0
     st.metric(
-        "PII Risk",
-        f"{pii_rate:.1f}%",
-        delta=None
+        label="PII Risk",
+        value=f"{pii_rate:.1f}%",
+        delta=f"{pii_rate - (df['has_pii'].sum() / len(df) * 100):.1f}%" if len(filtered_df) != len(df) else None,
+        delta_color="inverse"
     )
 
 st.markdown("---")
 
 # ============================================================================
-# QUALITY DISTRIBUTION CHART (using chart_data)
+# QUALITY DISTRIBUTION
 # ============================================================================
 
-st.subheader("📈 Quality Distribution")
+st.header("📈 Quality Distribution")
 
-quality_dist = chart_data['recommendation'].value_counts().reset_index()
-quality_dist.columns = ['recommendation', 'count']
+col1, col2 = st.columns([2, 1])
 
-quality_colors = {'index': '#28a745', 'review': '#ffc107', 'reject': '#dc3545'}
-quality_dist['color'] = quality_dist['recommendation'].map(quality_colors)
+with col1:
+    quality_counts = filtered_df['recommendation'].value_counts().reset_index()
+    quality_counts.columns = ['Recommendation', 'Count']
+    
+    quality_map = {'index': 'Index Ready', 'review': 'Needs Review', 'reject': 'Reject'}
+    quality_counts['Recommendation'] = quality_counts['Recommendation'].map(quality_map)
+    
+    fig = px.bar(
+        quality_counts,
+        x='Recommendation',
+        y='Count',
+        title='Reviews by Quality Tier',
+        color='Recommendation',
+        color_discrete_map={
+            'Index Ready': '#10b981',
+            'Needs Review': '#f59e0b',
+            'Reject': '#ef4444'
+        }
+    )
+    
+    fig.update_layout(
+        showlegend=False,
+        xaxis_title="Quality Tier",
+        yaxis_title="Number of Reviews",
+        height=400
+    )
+    
+    st.plotly_chart(fig, use_container_width=True)
 
-fig = px.bar(
-    quality_dist,
-    x='recommendation',
-    y='count',
-    color='recommendation',
-    color_discrete_map=quality_colors,
-    labels={'count': 'Number of Reviews', 'recommendation': 'Quality Tier'},
-    title=f"Review Distribution by Quality Tier (n={len(chart_data):,})"
+with col2:
+    st.markdown("**Summary Statistics:**")
+    
+    stats_df = pd.DataFrame({
+        'Metric': [
+            'Index Ready',
+            'Needs Review',
+            'Reject',
+            'Avg Score',
+            'Median Score'
+        ],
+        'Value': [
+            f"{(filtered_df['recommendation'] == 'index').sum():,} ({index_ready_rate:.1f}%)",
+            f"{(filtered_df['recommendation'] == 'review').sum():,} ({(filtered_df['recommendation'] == 'review').sum()/total_reviews*100:.1f}%)",
+            f"{(filtered_df['recommendation'] == 'reject').sum():,} ({(filtered_df['recommendation'] == 'reject').sum()/total_reviews*100:.1f}%)",
+            f"{avg_score:.1f}/100",
+            f"{filtered_df['index_readiness_score'].median():.1f}/100"
+        ]
+    })
+    
+    st.dataframe(stats_df, hide_index=True, use_container_width=True)
+
+st.markdown("---")
+
+# ============================================================================
+# SCORE DISTRIBUTION HISTOGRAM
+# ============================================================================
+
+st.header("📊 Score Distribution")
+
+fig = px.histogram(
+    filtered_df,
+    x='index_readiness_score',
+    nbins=20,
+    title='Distribution of Index-Readiness Scores',
+    color_discrete_sequence=['#3b82f6']
 )
 
-fig.update_layout(showlegend=False, height=400)
+fig.update_layout(
+    xaxis_title="Index-Readiness Score",
+    yaxis_title="Number of Reviews",
+    height=400,
+    showlegend=False
+)
+
+fig.add_vline(x=70, line_dash="dash", line_color="green", annotation_text="Index Ready (70+)")
+fig.add_vline(x=50, line_dash="dash", line_color="orange", annotation_text="Needs Review (50+)")
+
 st.plotly_chart(fig, use_container_width=True)
 
 st.markdown("---")
 
 # ============================================================================
-# PII ANALYSIS (using chart_data)
+# CHUNK QUALITY BREAKDOWN
 # ============================================================================
 
-st.subheader("🔒 PII Analysis")
+st.header("🔧 Chunk Quality Analysis")
 
 col1, col2 = st.columns(2)
 
 with col1:
-    pii_counts = chart_data['has_pii'].value_counts()
+    chunk_counts = filtered_df['chunk_quality_flag'].value_counts().reset_index()
+    chunk_counts.columns = ['Quality', 'Count']
+    
     fig = px.pie(
-        values=pii_counts.values,
-        names=['No PII' if not x else 'Has PII' for x in pii_counts.index],
-        color_discrete_sequence=['#28a745', '#dc3545'],
-        title="PII Distribution"
+        chunk_counts,
+        values='Count',
+        names='Quality',
+        title='Chunk Quality Distribution',
+        color='Quality',
+        color_discrete_map={
+            'optimal': '#10b981',
+            'too_short': '#f59e0b',
+            'too_long': '#ef4444'
+        }
     )
+    
+    fig.update_layout(height=400)
     st.plotly_chart(fig, use_container_width=True)
 
 with col2:
-    pii_type_counts = {}
-    for pii_list in chart_data['pii_types_list']:
-        for pii_type in pii_list:
-            pii_type_counts[pii_type] = pii_type_counts.get(pii_type, 0) + 1
+    chunk_scores = filtered_df.groupby('chunk_quality_flag')['index_readiness_score'].mean().reset_index()
+    chunk_scores.columns = ['Chunk Quality', 'Avg Score']
     
-    if pii_type_counts:
-        pii_type_df = pd.DataFrame(list(pii_type_counts.items()), columns=['PII Type', 'Count'])
-        fig = px.bar(
-            pii_type_df,
-            x='PII Type',
-            y='Count',
-            title="PII Types Detected",
-            color='Count',
-            color_continuous_scale='Reds'
-        )
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("No PII detected in filtered dataset")
+    fig = px.bar(
+        chunk_scores,
+        x='Chunk Quality',
+        y='Avg Score',
+        title='Avg Quality Score by Chunk Type',
+        color='Chunk Quality',
+        color_discrete_map={
+            'optimal': '#10b981',
+            'too_short': '#f59e0b',
+            'too_long': '#ef4444'
+        }
+    )
+    
+    fig.update_layout(
+        showlegend=False,
+        height=400,
+        yaxis_range=[0, 100]
+    )
+    
+    st.plotly_chart(fig, use_container_width=True)
 
 st.markdown("---")
 
 # ============================================================================
-# SCORE DISTRIBUTION (using chart_data)
+# PII ANALYSIS
 # ============================================================================
 
-st.subheader("📊 Quality Score Distribution")
+st.header("🔒 PII Detection Analysis")
 
-fig = px.histogram(
-    chart_data,
-    x='index_readiness_score',
-    nbins=20,
-    title="Distribution of Index-Readiness Scores",
-    labels={'index_readiness_score': 'Quality Score', 'count': 'Number of Reviews'},
-    color_discrete_sequence=['#1f77b4']
-)
+col1, col2 = st.columns(2)
 
-fig.add_vline(x=70, line_dash="dash", line_color="red", annotation_text="Threshold (70)")
-fig.add_vline(x=chart_data['index_readiness_score'].mean(), line_dash="dash", line_color="green", annotation_text=f"Mean ({chart_data['index_readiness_score'].mean():.1f})")
+with col1:
+    pii_counts = filtered_df['has_pii'].value_counts().reset_index()
+    pii_counts.columns = ['Has PII', 'Count']
+    pii_counts['Has PII'] = pii_counts['Has PII'].map({True: 'Contains PII', False: 'No PII'})
+    
+    fig = px.pie(
+        pii_counts,
+        values='Count',
+        names='Has PII',
+        title='PII Detection Results',
+        color='Has PII',
+        color_discrete_map={
+            'No PII': '#10b981',
+            'Contains PII': '#ef4444'
+        }
+    )
+    
+    fig.update_layout(height=400)
+    st.plotly_chart(fig, use_container_width=True)
 
-st.plotly_chart(fig, use_container_width=True)
+with col2:
+    st.markdown("**PII Types Detected:**")
+    
+    pii_type_counts = {}
+    for pii_list in filtered_df[filtered_df['has_pii']]['pii_types_list']:
+        for pii_type in pii_list:
+            pii_type_counts[pii_type] = pii_type_counts.get(pii_type, 0) + 1
+    
+    if pii_type_counts:
+        pii_df = pd.DataFrame({
+            'PII Type': list(pii_type_counts.keys()),
+            'Count': list(pii_type_counts.values())
+        }).sort_values('Count', ascending=False)
+        
+        fig = px.bar(
+            pii_df,
+            x='PII Type',
+            y='Count',
+            title='PII Types Breakdown',
+            color_discrete_sequence=['#ef4444']
+        )
+        
+        fig.update_layout(height=400, showlegend=False)
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("No PII detected in filtered data.")
 
 st.markdown("---")
 
@@ -561,4 +551,5 @@ st.markdown("---")
 # FOOTER
 # ============================================================================
 
-st.caption("RAG Index-Readiness Pipeline | MGTA 452 Project | Bug Fixes Applied ✅")
+st.markdown("---")
+st.caption("RAG Index-Readiness Pipeline | MGTA 452 Project | Enhanced with Cost Calculator & Export Features")

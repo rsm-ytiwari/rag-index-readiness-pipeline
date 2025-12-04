@@ -1,7 +1,6 @@
 """
-RAG Index-Readiness Dashboard - Bug Fixes Applied
-- Fix 1: Download ALL search results (not just 50)
-- Fix 2: Charts update when searching
+RAG Index-Readiness Dashboard - Complete Version
+With Anomaly Detection, Cost Calculator, Search, and All Features
 """
 
 import streamlit as st
@@ -381,54 +380,34 @@ search_query = st.text_input(
     placeholder="e.g., 'pizza', 'wEXCYHTpwn1ZrZDPlLeL7A', 'terrible service'"
 )
 
-# BUG FIX #1: Store ALL search results (not just 50)
-all_search_results = None
-
 if search_query:
-    # Get ALL matching results
-    all_search_results = filtered_df[
+    search_results = filtered_df[
         filtered_df['text'].str.contains(search_query, case=False, na=False) |
         filtered_df['review_id'].str.contains(search_query, case=False, na=False)
-    ]
+    ].head(50)
     
-    # Show only top 50 for display
-    search_results_display = all_search_results.head(50)
+    st.info(f"Found {len(search_results):,} matching reviews (showing top 50)")
     
-    st.info(f"Found {len(all_search_results):,} matching reviews (showing top 50)")
-    
-    if len(all_search_results) > 0:
-        display_df = search_results_display[['review_id', 'stars', 'index_readiness_score', 'recommendation', 'text']].copy()
+    if len(search_results) > 0:
+        display_df = search_results[['review_id', 'stars', 'index_readiness_score', 'recommendation', 'text']].copy()
         display_df['text_preview'] = display_df['text'].str[:100] + '...'
         display_df = display_df.drop('text', axis=1)
         
         st.dataframe(display_df, use_container_width=True)
         
-        # BUG FIX #1: Download ALL results (not just 50)
-        search_csv = all_search_results.to_csv(index=False)
+        # Download search results
+        search_csv = search_results.to_csv(index=False)
         st.download_button(
-            f"📥 Download Search Results ({len(all_search_results):,} reviews)",
+            "📥 Download Search Results",
             data=search_csv,
             file_name=f"search_results_{search_query[:20]}.csv",
-            mime="text/csv",
-            help=f"Downloads all {len(all_search_results):,} matching reviews"
+            mime="text/csv"
         )
 
 st.markdown("---")
 
 # ============================================================================
-# BUG FIX #2: Determine which data to show in charts
-# ============================================================================
-
-# If searching, show stats for search results
-# Otherwise, show stats for filtered data
-if search_query and all_search_results is not None and len(all_search_results) > 0:
-    chart_data = all_search_results
-    st.info(f"📊 **Charts below show statistics for {len(chart_data):,} search results**")
-else:
-    chart_data = filtered_df
-
-# ============================================================================
-# KPI METRICS (using chart_data)
+# KPI METRICS
 # ============================================================================
 
 st.subheader("📊 Key Metrics")
@@ -438,12 +417,12 @@ col1, col2, col3, col4 = st.columns(4)
 with col1:
     st.metric(
         "Total Reviews",
-        f"{len(chart_data):,}",
+        f"{len(filtered_df):,}",
         delta=None
     )
 
 with col2:
-    avg_score = chart_data['index_readiness_score'].mean()
+    avg_score = filtered_df['index_readiness_score'].mean()
     st.metric(
         "Avg Quality Score",
         f"{avg_score:.1f}/100",
@@ -451,7 +430,7 @@ with col2:
     )
 
 with col3:
-    duplicate_rate = (chart_data['is_duplicate']).sum() / len(chart_data) * 100 if len(chart_data) > 0 else 0
+    duplicate_rate = (filtered_df['is_duplicate']).sum() / len(filtered_df) * 100
     st.metric(
         "Duplicate Rate",
         f"{duplicate_rate:.1f}%",
@@ -459,7 +438,7 @@ with col3:
     )
 
 with col4:
-    pii_rate = (chart_data['has_pii']).sum() / len(chart_data) * 100 if len(chart_data) > 0 else 0
+    pii_rate = (filtered_df['has_pii']).sum() / len(filtered_df) * 100
     st.metric(
         "PII Risk",
         f"{pii_rate:.1f}%",
@@ -469,12 +448,12 @@ with col4:
 st.markdown("---")
 
 # ============================================================================
-# QUALITY DISTRIBUTION CHART (using chart_data)
+# QUALITY DISTRIBUTION CHART
 # ============================================================================
 
 st.subheader("📈 Quality Distribution")
 
-quality_dist = chart_data['recommendation'].value_counts().reset_index()
+quality_dist = filtered_df['recommendation'].value_counts().reset_index()
 quality_dist.columns = ['recommendation', 'count']
 
 quality_colors = {'index': '#28a745', 'review': '#ffc107', 'reject': '#dc3545'}
@@ -487,7 +466,7 @@ fig = px.bar(
     color='recommendation',
     color_discrete_map=quality_colors,
     labels={'count': 'Number of Reviews', 'recommendation': 'Quality Tier'},
-    title=f"Review Distribution by Quality Tier (n={len(chart_data):,})"
+    title=f"Review Distribution by Quality Tier (n={len(filtered_df):,})"
 )
 
 fig.update_layout(showlegend=False, height=400)
@@ -496,7 +475,7 @@ st.plotly_chart(fig, use_container_width=True)
 st.markdown("---")
 
 # ============================================================================
-# PII ANALYSIS (using chart_data)
+# PII ANALYSIS
 # ============================================================================
 
 st.subheader("🔒 PII Analysis")
@@ -504,7 +483,7 @@ st.subheader("🔒 PII Analysis")
 col1, col2 = st.columns(2)
 
 with col1:
-    pii_counts = chart_data['has_pii'].value_counts()
+    pii_counts = filtered_df['has_pii'].value_counts()
     fig = px.pie(
         values=pii_counts.values,
         names=['No PII' if not x else 'Has PII' for x in pii_counts.index],
@@ -515,7 +494,7 @@ with col1:
 
 with col2:
     pii_type_counts = {}
-    for pii_list in chart_data['pii_types_list']:
+    for pii_list in filtered_df['pii_types_list']:
         for pii_type in pii_list:
             pii_type_counts[pii_type] = pii_type_counts.get(pii_type, 0) + 1
     
@@ -536,13 +515,13 @@ with col2:
 st.markdown("---")
 
 # ============================================================================
-# SCORE DISTRIBUTION (using chart_data)
+# SCORE DISTRIBUTION
 # ============================================================================
 
 st.subheader("📊 Quality Score Distribution")
 
 fig = px.histogram(
-    chart_data,
+    filtered_df,
     x='index_readiness_score',
     nbins=20,
     title="Distribution of Index-Readiness Scores",
@@ -551,7 +530,7 @@ fig = px.histogram(
 )
 
 fig.add_vline(x=70, line_dash="dash", line_color="red", annotation_text="Threshold (70)")
-fig.add_vline(x=chart_data['index_readiness_score'].mean(), line_dash="dash", line_color="green", annotation_text=f"Mean ({chart_data['index_readiness_score'].mean():.1f})")
+fig.add_vline(x=filtered_df['index_readiness_score'].mean(), line_dash="dash", line_color="green", annotation_text=f"Mean ({filtered_df['index_readiness_score'].mean():.1f})")
 
 st.plotly_chart(fig, use_container_width=True)
 
@@ -561,4 +540,4 @@ st.markdown("---")
 # FOOTER
 # ============================================================================
 
-st.caption("RAG Index-Readiness Pipeline | MGTA 452 Project | Bug Fixes Applied ✅")
+st.caption("RAG Index-Readiness Pipeline | MGTA 452 Project | Complete with Anomaly Detection")
