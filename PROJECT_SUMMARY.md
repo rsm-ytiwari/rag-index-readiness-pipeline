@@ -1,10 +1,8 @@
 # RAG Index-Readiness Pipeline - Project Summary
 
-**Student:** [Your Name]  
-**Course:** MGTA 452 - Collecting and Analyzing Large Datasets  
-**Date:** December 2025  
-**Grade Target:** A+
-
+**Student:** [Your Name]
+**Course:** MGTA 452 - Collecting and Analyzing Large Datasets
+**Date:** December 2025
 ---
 
 ## 📊 Project Overview
@@ -314,9 +312,9 @@ This project demonstrates a **production-ready solution** to a **real business p
 - ✅ Software engineering (modularity, testing, documentation)
 - ✅ Innovation (cutting-edge RAG problem, modern tools)
 
-**Total Effort:** 18 hours (as specified)  
-**Lines of Code:** ~5,000  
-**Documentation:** 10,000+ words  
+**Total Effort:** 18 hours (as specified)
+**Lines of Code:** ~5,000
+**Documentation:** 10,000+ words
 **Features:** 20+ deliverables
 
 **Ready for:** Graduate course submission, portfolio project, job interviews
@@ -324,4 +322,3 @@ This project demonstrates a **production-ready solution** to a **real business p
 ---
 
 **Thank you for reviewing this project!** 🙏
-
