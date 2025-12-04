@@ -1,7 +1,7 @@
 # Data files
 data/bronze/*.parquet
 data/silver/*.parquet
-data/gold/*.parquet
+# data/gold/*.parquet
 *.csv
 Raw/*
 
