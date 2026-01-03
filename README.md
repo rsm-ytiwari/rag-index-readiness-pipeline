@@ -524,11 +524,7 @@ pytest tests/ -v
 
 ---
 
-## 📄 License
 
-MIT License - See LICENSE file
-
----
 
 ## 🙏 Acknowledgments
 
@@ -536,15 +532,6 @@ MIT License - See LICENSE file
 - **Course:** MGTA 452 - Washington University in St. Louis
 - **Tools:** Pandas, DuckDB, FastAPI, Streamlit, Plotly
 - **Algorithms:** MinHash LSH for duplicate detection
-
----
-
-## 📞 Contact
-
-**Student:** [Your Name]  
-**Course:** MGTA 452  
-**Semester:** Fall 2025  
-**GitHub:** [Your GitHub URL]
 
 ---
 
@@ -565,17 +552,6 @@ MIT License - See LICENSE file
 - **OpenAI:** ChatGPT retrieval plugin data preparation
 - **Enterprise:** Internal knowledge base quality assurance
 
-### Skills Demonstrated
-
-- ✅ Large dataset processing (6.99M → 100K sample)
-- ✅ Feature engineering (25 computed features)
-- ✅ Algorithm implementation (MinHash LSH)
-- ✅ API development (FastAPI)
-- ✅ Data visualization (Streamlit + Plotly)
-- ✅ SQL analytics (DuckDB)
-- ✅ Production deployment considerations
-- ✅ Cost-benefit analysis
-- ✅ Technical documentation
 
 ---
 
